@@ -1,10 +1,10 @@
 [package]
 name = "debloatR"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 publish = false
 
-[dependencies]
+[target.'cfg(windows)'.dependencies]
 winreg = "0.55"
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
@@ -21,7 +21,14 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+serde_json = "1"
+libc = "0.2"
+sysinfo = { version = "0.33", default-features = false, features = ["system"] }
+
 [profile.release]
 lto = true
 codegen-units = 1
 strip = true
+
+

@@ -1,0 +1,13 @@
+name: Build macOS app
+on: [push, workflow_dispatch]
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup update stable && rustup default stable
+      - run: bash macos/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macOS
+          path: target/mac/debloatR-macOS.zip
