@@ -21,6 +21,8 @@ public static class MonitorBench {
         return m.privateWs.ToUInt64();
     }
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h,int mode);
+    [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr h,int id);
+    [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr h,int m,IntPtr a,IntPtr b);
     [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
 }
 '@
@@ -28,10 +30,15 @@ $binary = Join-Path $PSScriptRoot '..\target\release\debloatR.exe'
 $monitor = Start-Process $binary -PassThru -WindowStyle Normal
 try {
     if (!$monitor.WaitForInputIdle(15000)) { throw 'Window startup timed out' }
-    Start-Sleep -Seconds 6
+
     $monitor.Refresh()
     $window = $monitor.MainWindowHandle
     if ($window -eq [IntPtr]::Zero) { throw 'No monitor window' }
+    foreach ($id in 45,10) {
+        [void][MonitorBench]::SendMessage([MonitorBench]::GetDlgItem($window,$id),245,0,0)
+        Start-Sleep -Milliseconds 500
+    }
+    Start-Sleep -Seconds 6
     foreach ($phase in 'Visible','Minimized') {
         $minimized = $phase -eq 'Minimized'
         if ($minimized) { [void][MonitorBench]::ShowWindow($window,6) }
@@ -58,3 +65,4 @@ try {
 } finally {
     if (!$monitor.HasExited) { [void]$monitor.CloseMainWindow(); [void]$monitor.WaitForExit(5000) }
 }
+

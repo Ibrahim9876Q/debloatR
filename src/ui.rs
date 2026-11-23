@@ -31,12 +31,15 @@ const SEARCH_LABEL: i32 = 31;
 const ACTION: i32 = 40;
 const EVENT: u32 = WM_APP + 1;
 const LAYOUT: u32 = WM_APP + 2;
-const NAV_NAMES: [&str; 5] = [
+const START: i32 = 45;
+const INTRO: i32 = 46;
+const NAV_NAMES: [&str; 6] = [
     "Processes",
     "Leak watch",
     "Discrepancies",
     "Action log",
     "Metric guide",
+    "Scan results",
 ];
 const ACTIONS: [&str; 5] = [
     "Open location",
@@ -121,13 +124,18 @@ unsafe extern "system" fn proc(w: HWND, msg: u32, a: usize, b: isize) -> isize {
                                 d.itemID as usize,
                                 buf.as_mut_ptr() as isize,
                             );
-                            draw(
-                                d.hDC,
-                                &d.rcItem,
-                                &String::from_utf16_lossy(&buf[..n as usize]),
-                                selected,
-                                DT_LEFT,
-                            );
+                            let text = String::from_utf16_lossy(&buf[..n as usize]);
+                            let width = d.rcItem.right - d.rcItem.left;
+                            for ((left, right), cell) in
+                                [(0, 25), (25, 34), (34, 49), (49, 64), (64, 80), (80, 100)]
+                                    .into_iter()
+                                    .zip(text.split('\t'))
+                            {
+                                let mut rect = d.rcItem;
+                                rect.left += width * left / 100;
+                                rect.right = d.rcItem.left + width * right / 100;
+                                draw(d.hDC, &rect, cell, selected, DT_LEFT | DT_END_ELLIPSIS);
+                            }
                         }
                     }
                 } else {
@@ -203,17 +211,30 @@ impl App {
     }
     fn init(&self) {
         for (id, label) in [
-            (TITLE, "debloatR  //  MEMORY MONITOR"),
+            (TITLE, "debloatR"),
             (SUMMARY, ""),
-            (HEADER, ""),
+            (HEADER, "Process"),
             (STATUS, ""),
-            (SEARCH_LABEL, "Find name/PID >"),
+            (SEARCH_LABEL, "Search processes"),
         ] {
             self.create("STATIC", label, id, 0)
         }
         for (i, n) in NAV_NAMES.iter().enumerate() {
             self.button(NAV + i as i32, n)
         }
+        self.create("STATIC","See which apps use your memory, check for sustained growth, and review background activity.",INTRO,0);
+        for (i, label) in [
+            "PID",
+            "Private working set",
+            "Total working set",
+            "Private bytes",
+        ]
+        .iter()
+        .enumerate()
+        {
+            self.create("STATIC", label, 50 + i as i32, 0);
+        }
+        self.button(START, "Scan device");
         self.button(INTERVAL, "Sample: 5 s");
         self.button(SORT, "Sort: Private WS");
         self.button(ORDER, "Descending");
@@ -275,8 +296,15 @@ impl App {
             let mut r = zeroed();
             GetClientRect(self.w, &mut r);
             let (w, h) = (r.right, r.bottom);
+            let landing = self.page == 6;
+            self.place(INTRO, 32, h / 2 - 60, w - 64, 52, landing);
+            self.place(START, 32, h / 2, 160, 42, landing);
+            if landing {
+                self.place(TITLE, 32, h / 2 - 120, 400, 50, true);
+                return;
+            }
             let p = self.page == 0;
-            self.place(TITLE, 16, 12, w - 190, 22, true);
+            self.place(TITLE, 16, 1, w - 190, 40, true);
             self.place(INTERVAL, w - 160, 8, 144, 27, true);
             self.place(SUMMARY, 16, 42, w - 32, 84, true);
             for (i, n) in NAV_NAMES.iter().enumerate() {
@@ -284,18 +312,35 @@ impl App {
                 set(
                     self.item(id),
                     &if self.page == i {
-                        format!("[ {n} ]")
+                        format!("●  {n}")
                     } else {
                         n.to_string()
                     },
                 );
-                self.place(id, 16 + i as i32 * 150, 133, 142, 29, true);
+                self.place(
+                    id,
+                    16 + i as i32 * ((w - 32) / 6),
+                    133,
+                    (w - 48) / 6,
+                    29,
+                    true,
+                );
             }
             self.place(SEARCH_LABEL, 16, 178, 149, 22, p);
             self.place(SEARCH, 165, 174, (w - 479).min(360), 27, p);
             self.place(SORT, w - 301, 174, 168, 27, p);
             self.place(ORDER, w - 127, 174, 111, 27, p);
-            self.place(HEADER, 20, 211, w - 40, 22, p);
+            self.place(HEADER, 20, 211, (w - 50) / 4, 22, p);
+            for (i, pct) in [25, 34, 49, 64].into_iter().enumerate() {
+                self.place(
+                    50 + i as i32,
+                    20 + (w - 50) * pct / 100,
+                    211,
+                    (w - 50) * 14 / 100,
+                    22,
+                    p,
+                );
+            }
             self.place(TABLE, 16, 234, w - 32, h - 310, p);
             self.place(REPORT, 16, 176, w - 32, h - 221, !p);
             for i in 0..5 {
@@ -312,25 +357,17 @@ impl App {
     fn refresh(&mut self, chosen: Option<Identity>) {
         let m = &self.monitor;
         let s = &m.system;
-        let gauge = |a: Option<u64>, b: Option<u64>| {
-            a.zip(b)
-                .filter(|(_, b)| *b > 0)
-                .map(|(a, b)| {
-                    let n = (a.saturating_mul(16) / b).min(16) as usize;
-                    format!("[{}{}]", "#".repeat(n), ".".repeat(16 - n))
-                })
-                .unwrap_or_else(|| "[      ?       ]".into())
-        };
+        if self.page == 6 {
+            return;
+        }
         set(
             self.item(SUMMARY),
             &format!(
-                "RAM    {}  {} in use    {} available\r\n       {} installed    {} usable\r\nCOMMIT {}  {} of {} limit\r\nPRIVATE WORKING SET    {} measured across {} / {} processes",
-                gauge(s.used, s.usable),
+                "Physical memory     {} in use     ·     {} available\r\nInstalled     {}     ·     Usable     {}\r\nCommitted memory     {} of {}\r\nMeasured private memory     {} across {} of {} processes",
                 mem(s.used),
                 mem(s.available),
                 mem(s.installed),
                 mem(s.usable),
-                gauge(s.commit, s.limit),
                 mem(s.commit),
                 mem(s.limit),
                 mem(m.sum),
@@ -355,6 +392,7 @@ impl App {
             return;
         }
         let content = match self.page {
+            5 => crate::review::report(m),
             1 => {
                 let mut lines = vec![
                     "LEAK WATCH  /  private-byte growth".into(),
@@ -454,20 +492,13 @@ impl App {
             let top = SendMessageW(w, LB_GETTOPINDEX, 0, 0);
             SendMessageW(w, WM_SETREDRAW, 0, 0);
             SendMessageW(w, LB_RESETCONTENT, 0, 0);
-            set(
-                self.item(HEADER),
-                &format!(
-                    "{:<28} {:>7} {:>14} {:>14} {:>14}",
-                    "IMAGE", "PID", "PRIVATE WS", "TOTAL WS", "PRIVATE BYTES"
-                ),
-            );
             self.displayed.clear();
             for (pos, i) in indices.iter().enumerate() {
                 let r = &rows[*i];
                 self.displayed.push((r.pid, r.id));
                 let name = r.name.chars().take(28).collect::<String>();
                 let line = format!(
-                    "{name:<28} {:>7} {:>14} {:>14} {:>14}  {}",
+                    "{name}\t{}\t{}\t{}\t{}\t{}",
                     r.pid,
                     mem(r.private),
                     mem(r.ws),
@@ -521,7 +552,15 @@ impl App {
     fn event(&mut self, id: i32) {
         let chosen = self.selected().and_then(|r| r.id);
         match id {
-            10..=14 => {
+            START => {
+                self.monitor.sample();
+                self.page = 5;
+                self.layout();
+                unsafe {
+                    SetTimer(self.w, 1, 5000, None);
+                }
+            }
+            10..=15 => {
                 self.page = (id - NAV) as usize;
                 self.layout();
             }
@@ -596,13 +635,13 @@ pub fn run() {
             0,
             5,
             0,
-            wide("Consolas").as_ptr(),
+            wide("Segoe UI").as_ptr(),
         );
         let mut app = App {
             w,
             font,
             monitor: Monitor::new(),
-            page: 0,
+            page: 6,
             interval: 5,
             sort: 2,
             desc: true,
@@ -611,11 +650,27 @@ pub fn run() {
             notice: String::new(),
         };
         app.init();
+        let heading = CreateFontW(
+            -30,
+            0,
+            0,
+            0,
+            600,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            5,
+            0,
+            wide("Segoe UI").as_ptr(),
+        );
+        SendMessageW(app.item(TITLE), WM_SETFONT, heading as usize, 0);
         app.layout();
-        app.monitor.sample();
-        app.refresh(None);
+
         ShowWindow(w, SW_SHOWNORMAL);
-        SetTimer(w, 1, 5000, None);
+
         let mut msg = zeroed();
         while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
             if msg.hwnd == w {
@@ -650,6 +705,7 @@ pub fn run() {
                 DispatchMessageW(&msg);
             }
         }
+        DeleteObject(heading as _);
         DeleteObject(font as _);
     }
 }

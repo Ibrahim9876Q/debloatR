@@ -1,6 +1,6 @@
 # debloatR
 
-A small native Windows 11 RAM monitor written in Rust. The black-and-white Win32 interface has ASCII usage meters, a searchable process table, and trend graphs. It runs on demand under your current account.
+A black-and-white desktop RAM analyzer for Windows 11 and macOS 13 or later. Choose **Scan device** to measure system and process memory. Results update while the app collects growth history.
 
 ## Run
 
@@ -15,7 +15,22 @@ cargo build --release --locked
 
 If Rust is already installed but missing from this PowerShell session's PATH, run `$env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"` first.
 
-## Read a scan
+## macOS
+
+Download **debloatR-macOS.zip** from the latest release, unzip it and open **debloatR.app**. The universal application supports Apple silicon and Intel. It is ad-hoc signed and has no Apple notarization. To build locally on a Mac with Xcode Command Line Tools and stable Rust installed:
+
+```sh
+git clone https://github.com/Ibrahim9876Q/debloatR.git
+cd debloatR
+bash macos/build.sh
+open target/mac/debloatR.app
+```
+
+The native SwiftUI window uses a Rust scanner to enumerate processes and read physical footprints via libproc. It compares measured footprints with system use and watches each PID and process start time for sustained growth. Recommendations identify inactive regular apps and accessory apps. Review these in the app itself or in Activity Monitor. Windows cleanup controls, pool metrics and enumeration discrepancies are Windows-specific.
+
+## Read a Windows scan
+
+**Scan results** compares system in-use RAM with the measured private working sets. It reports the difference and checks growth over time regardless of the size of the gap. Recommendations show the largest recognized optional apps with visible windows and recognized background apps. Unknown processes and system services receive no close suggestion. An app may still be doing useful work without a window.
 
 **Processes** starts with the largest private working sets. Search by image name or PID. Click **Sort** to cycle through the five columns and **Ascending/Descending** to reverse the order. Unknown measurements sort last. Click **Sample** to cycle through 5, 10, 30 and 2 seconds. The monitor waits for Windows messages between scans and skips table and report refreshes while minimized.
 
@@ -59,7 +74,7 @@ cargo build --release --locked
 
 The measurement script launches a fresh release instance, warms it for six seconds, takes 12 private-working-set samples per phase, and measures CPU time across each entire phase. It verifies the window's minimized state. Machine CPU percentage divides the process's CPU time by elapsed time and logical processor count. Closing the monitor discards its session history.
 
-### Release measurements and Windows checks
+### Version 0.1.0 reference measurements and Windows checks
 
 Measured on Windows 11 Home x64 build 26200, AMD Ryzen 5 7600X, 12 logical processors, 32 GiB installed RAM, Rust 1.100.0 stable GNU release build. The Processes view used the default 5-second interval throughout. Each phase sampled private working set 12 times at 5-second intervals.
 
@@ -71,3 +86,4 @@ Measured on Windows 11 Home x64 build 26200, AMD Ryzen 5 7600X, 12 logical proce
 These measurements describe one run on a live desktop with roughly 400 processes. Sampling continues while minimized and the process keeps its history and allocated buffers.
 
 Formatting, strict Clippy, eight tests and the release build passed. Windows checks exercised enumeration, partial access, compression, all five views, PID search, sorting, interval changes, clipboard path copying and the action log. A disposable growing process triggered a live finding over 65 seconds (20.9 to 88.1 MiB, +61.96 MiB/min). Disposable windows exercised graceful close, cancellation and confirmation of termination, and a harmless registered uninstall command. Permanent removal of installed software was not exercised. Persistent enumeration discrepancies were tested with synthetic observations. A live driver leak was not observed.
+
