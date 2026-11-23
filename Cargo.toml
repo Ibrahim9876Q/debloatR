@@ -1,6 +1,6 @@
 [package]
 name = "debloatR"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 publish = false
 
@@ -13,6 +13,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_LibraryLoader",
     "Win32_System_Memory",
+    "Win32_System_Services",
     "Win32_System_Performance",
     "Win32_System_ProcessStatus",
     "Win32_System_SystemInformation",
@@ -30,5 +31,6 @@ sysinfo = { version = "0.33", default-features = false, features = ["system"] }
 lto = true
 codegen-units = 1
 strip = true
+
 
 

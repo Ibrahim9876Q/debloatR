@@ -82,6 +82,8 @@ pub struct Row {
     pub ws: Option<u64>,
     pub commit: Option<u64>,
     pub status: String,
+    pub counter_private: bool,
+    pub counter_id: Option<Identity>,
 }
 fn measure(pid: u32, name: String, cutoff: u64) -> Row {
     let mut r = Row {
@@ -184,7 +186,48 @@ pub fn mem(v: Option<u64>) -> String {
     v.map(|n| format!("{:.1} MiB", n as f64 / MIB as f64))
         .unwrap_or_else(|| "unknown".into())
 }
+fn counter_values(counter: isize) -> Option<HashMap<String, u64>> {
+    unsafe {
+        let (mut bytes, mut count) = (0, 0);
+        if counter == 0
+            || PdhGetRawCounterArrayW(counter, &mut bytes, &mut count, null_mut()) != PDH_MORE_DATA
+            || bytes > 16 * 1024 * 1024
+        {
+            return None;
+        }
+        let mut storage = vec![0u64; (bytes as usize).div_ceil(8)];
+        let ptr = storage.as_mut_ptr().cast::<PDH_RAW_COUNTER_ITEM_W>();
+        if PdhGetRawCounterArrayW(counter, &mut bytes, &mut count, ptr) != 0 {
+            return None;
+        }
+        let mut values = HashMap::new();
+        let mut ambiguous = HashSet::new();
+        for item in std::slice::from_raw_parts(ptr, count as usize) {
+            if item.RawValue.CStatus > 1 || item.RawValue.FirstValue < 0 || item.szName.is_null() {
+                continue;
+            }
+            let mut len = 0;
+            while *item.szName.add(len) != 0 {
+                len += 1
+            }
+            let name = String::from_utf16_lossy(std::slice::from_raw_parts(item.szName, len));
+            if values
+                .insert(name.clone(), item.RawValue.FirstValue as u64)
+                .is_some()
+            {
+                ambiguous.insert(name);
+            }
+        }
+        values.retain(|name, _| !ambiguous.contains(name));
+        Some(values)
+    }
+}
 pub struct Compression {
+    ids: isize,
+    private_ws: isize,
+    commit: isize,
+    started: isize,
+    collected: bool,
     query: isize,
     counter: isize,
 }
@@ -194,8 +237,21 @@ impl Compression {
             let mut s = Self {
                 query: 0,
                 counter: 0,
+                ids: 0,
+                private_ws: 0,
+                commit: 0,
+                started: 0,
+                collected: false,
             };
             if PdhOpenQueryW(null(), 0, &mut s.query) == 0 {
+                for (name, counter) in [
+                    (r"\Process(*)\ID Process", &mut s.ids),
+                    (r"\Process(*)\Private Bytes", &mut s.commit),
+                    (r"\Process(*)\Elapsed Time", &mut s.started),
+                    (r"\Process(*)\Working Set - Private", &mut s.private_ws),
+                ] {
+                    PdhAddEnglishCounterW(s.query, wide(name).as_ptr(), 0, counter);
+                }
                 PdhAddEnglishCounterW(
                     s.query,
                     wide(r"\Process(Memory Compression)\Working Set - Private").as_ptr(),
@@ -206,11 +262,12 @@ impl Compression {
             s
         }
     }
-    fn read(&self) -> Option<u64> {
+    fn read(&mut self) -> Option<u64> {
         unsafe {
             let mut raw = zeroed();
-            (self.counter != 0
-                && PdhCollectQueryData(self.query) == 0
+            self.collected = self.query != 0 && PdhCollectQueryData(self.query) == 0;
+            (self.collected
+                && self.counter != 0
                 && PdhGetRawCounterValue(self.counter, null_mut(), &mut raw) == 0
                 && raw.CStatus <= 1)
                 .then_some(raw.FirstValue as u64)
@@ -241,7 +298,7 @@ pub struct System {
     pub compression: Option<u64>,
 }
 impl System {
-    fn read(c: &Compression) -> Self {
+    fn read(c: &mut Compression) -> Self {
         unsafe {
             let mut s = Self {
                 compression: c.read(),
@@ -271,12 +328,66 @@ struct Evidence {
     first: String,
     count: u32,
 }
+fn service_hosts() -> HashMap<u32, Vec<String>> {
+    use windows_sys::Win32::System::Services::*;
+    let mut hosts: HashMap<u32, Vec<String>> = HashMap::new();
+    unsafe {
+        let scm = OpenSCManagerW(null(), null(), SC_MANAGER_ENUMERATE_SERVICE);
+        if scm.is_null() {
+            return hosts;
+        }
+        let mut storage = vec![0u64; 32768];
+        let mut resume = 0;
+        loop {
+            let (mut bytes, mut returned) = (0, 0);
+            let ok = EnumServicesStatusExW(
+                scm,
+                SC_ENUM_PROCESS_INFO,
+                SERVICE_WIN32,
+                SERVICE_ACTIVE,
+                storage.as_mut_ptr().cast(),
+                262144,
+                &mut bytes,
+                &mut returned,
+                &mut resume,
+                null(),
+            );
+            let more = ok == 0 && GetLastError() == ERROR_MORE_DATA;
+            if ok == 0 && !more {
+                break;
+            }
+            for entry in std::slice::from_raw_parts(
+                storage.as_ptr().cast::<ENUM_SERVICE_STATUS_PROCESSW>(),
+                returned as usize,
+            ) {
+                let name = entry.lpServiceName;
+                let mut len = 0;
+                while *name.add(len) != 0 {
+                    len += 1
+                }
+                hosts
+                    .entry(entry.ServiceStatusProcess.dwProcessId)
+                    .or_default()
+                    .push(String::from_utf16_lossy(std::slice::from_raw_parts(
+                        name, len,
+                    )));
+            }
+            if !more || returned == 0 {
+                break;
+            }
+        }
+        CloseServiceHandle(scm);
+    }
+    hosts
+}
 pub struct Monitor {
+    pub hosts: HashMap<u32, Vec<String>>,
     start: Instant,
     c: Compression,
     pub system: System,
     pub rows: Vec<Row>,
     pub trends: Trends,
+    pub(crate) counter_trends: Trends,
     pub pools: [History; 2],
     pending: HashMap<(Identity, bool), Evidence>,
     pub records: VecDeque<String>,
@@ -288,11 +399,13 @@ pub struct Monitor {
 impl Monitor {
     pub fn new() -> Self {
         Self {
+            hosts: HashMap::new(),
             start: Instant::now(),
             c: Compression::new(),
             system: System::default(),
             rows: vec![],
             trends: Trends::default(),
+            counter_trends: Trends::default(),
             pools: Default::default(),
             pending: Default::default(),
             records: Default::default(),
@@ -305,12 +418,13 @@ impl Monitor {
     pub fn sample(&mut self) {
         let sec = self.start.elapsed().as_secs();
         self.sampled = stamp();
-        self.system = System::read(&self.c);
+        self.system = System::read(&mut self.c);
         let cutoff = unsafe {
             let mut f = zeroed();
             GetSystemTimePreciseAsFileTime(&mut f);
             ticks(f)
         };
+        self.hosts = service_hosts();
         let a = toolhelp();
         let b = psapi();
         let mut names = a.as_ref().cloned().unwrap_or_default();
@@ -323,12 +437,69 @@ impl Monitor {
             .into_iter()
             .map(|(p, n)| measure(p, n, cutoff))
             .collect();
+        if self.c.collected
+            && let (Some(ids), Some(sizes)) = (
+                counter_values(self.c.ids),
+                counter_values(self.c.private_ws),
+            )
+        {
+            let commits = counter_values(self.c.commit).unwrap_or_default();
+            let starts = counter_values(self.c.started).unwrap_or_default();
+            let by_pid: HashMap<_, _> = ids
+                .iter()
+                .filter_map(|(instance, pid)| {
+                    let image = instance
+                        .rsplit_once('#')
+                        .filter(|(_, suffix)| suffix.parse::<u32>().is_ok())
+                        .map_or(instance.as_str(), |(base, _)| base);
+                    Some((
+                        u32::try_from(*pid).ok()?,
+                        (image, *sizes.get(instance)?, instance),
+                    ))
+                })
+                .collect();
+            for row in &mut self.rows {
+                if (row.private.is_none() || row.commit.is_none())
+                    && row.pid != 0
+                    && let Some((image, bytes, instance)) = by_pid.get(&row.pid)
+                    && row
+                        .name
+                        .trim_end_matches(".exe")
+                        .eq_ignore_ascii_case(image)
+                {
+                    if row.private.is_none() {
+                        row.private = Some(*bytes);
+                        row.counter_private = true;
+                    }
+                    if row.commit.is_none()
+                        && let (Some(&value), Some(&start)) =
+                            (commits.get(*instance), starts.get(*instance))
+                        && start > 0
+                    {
+                        row.commit = Some(value);
+                        row.counter_id = Some(Identity {
+                            pid: row.pid,
+                            born: start,
+                        });
+                    }
+                }
+            }
+        }
         let private = self.rows.iter().filter_map(|r| r.private);
         self.measured = private.clone().count();
         self.sum = (self.measured > 0).then(|| private.sum());
         self.trends.update(
             sec,
-            self.rows.iter().filter_map(|r| Some((r.id?, r.commit?))),
+            self.rows
+                .iter()
+                .filter(|r| r.counter_id.is_none())
+                .filter_map(|r| Some((r.id?, r.commit?))),
+        );
+        self.counter_trends.update(
+            sec,
+            self.rows
+                .iter()
+                .filter_map(|r| Some((r.counter_id?, r.commit?))),
         );
         for (h, v) in self
             .pools
@@ -388,6 +559,13 @@ impl Monitor {
             ),
         };
         self.pending = next;
+    }
+    pub fn history(&self, r: &Row) -> Option<&History> {
+        if let Some(id) = r.counter_id {
+            self.counter_trends.0.get(&id)
+        } else {
+            self.trends.0.get(&r.id?)
+        }
     }
     pub fn residual(&self) -> Option<u64> {
         self.system.used?.checked_sub(self.sum?)

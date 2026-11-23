@@ -15,7 +15,7 @@ use windows_sys::Win32::{
 };
 use winreg::{RegKey, enums::*};
 
-fn path(h: &Handle) -> Result<PathBuf, String> {
+pub(crate) fn path(h: &Handle) -> Result<PathBuf, String> {
     let mut buf = vec![0; 32768];
     let mut size = buf.len() as u32;
     unsafe {
@@ -25,7 +25,7 @@ fn path(h: &Handle) -> Result<PathBuf, String> {
     }
     Ok(OsString::from_wide(&buf[..size as usize]).into())
 }
-fn protect(h: &Handle, id: Identity) -> Result<(), String> {
+pub(crate) fn protect(h: &Handle, id: Identity) -> Result<(), String> {
     let mut critical = 0;
     if id.pid <= 4 || id.pid == std::process::id() {
         return Err("Protected process".into());

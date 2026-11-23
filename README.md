@@ -30,6 +30,10 @@ The native SwiftUI window uses a Rust scanner to enumerate processes and read ph
 
 ## Read a Windows scan
 
+**Suspected leak sources** appears in Scan results and Discrepancies. Each finding names the image and PID, shows the private-commit trend, and resolves the executable path when permitted. Windows service names come from the Service Control Manager. A shared service host can contain several services, so the scan only attributes growth to the host. Kernel pool growth likewise has no per-driver attribution here.
+
+Both views rank measured private RAM owners and per-process shareable resident footprints. A second pass through Windows performance counters matches process IDs and image names to recover missing private working sets. Counter-only private-commit histories use PID and the raw process start tick independently of handle-based histories. These measurements grant no cleanup permissions. Shared footprints overlap across apps.
+
 **Scan results** compares system in-use RAM with the measured private working sets. It reports the difference and checks growth over time regardless of the size of the gap. Recommendations show the largest recognized optional apps with visible windows and recognized background apps. Unknown processes and system services receive no close suggestion. An app may still be doing useful work without a window.
 
 **Processes** starts with the largest private working sets. Search by image name or PID. Click **Sort** to cycle through the five columns and **Ascending/Descending** to reverse the order. Unknown measurements sort last. Click **Sample** to cycle through 5, 10, 30 and 2 seconds. The monitor waits for Windows messages between scans and skips table and report refreshes while minimized.
@@ -86,4 +90,5 @@ Measured on Windows 11 Home x64 build 26200, AMD Ryzen 5 7600X, 12 logical proce
 These measurements describe one run on a live desktop with roughly 400 processes. Sampling continues while minimized and the process keeps its history and allocated buffers.
 
 Formatting, strict Clippy, eight tests and the release build passed. Windows checks exercised enumeration, partial access, compression, all five views, PID search, sorting, interval changes, clipboard path copying and the action log. A disposable growing process triggered a live finding over 65 seconds (20.9 to 88.1 MiB, +61.96 MiB/min). Disposable windows exercised graceful close, cancellation and confirmation of termination, and a harmless registered uninstall command. Permanent removal of installed software was not exercised. Persistent enumeration discrepancies were tested with synthetic observations. A live driver leak was not observed.
+
 

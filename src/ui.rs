@@ -403,7 +403,7 @@ impl App {
                 let mut waiting = 0;
                 let mut flags = 0;
                 for r in &m.rows {
-                    if let Some(h) = r.id.and_then(|id| m.trends.0.get(&id)) {
+                    if let Some(h) = m.history(r) {
                         if !h.ready() {
                             waiting += 1
                         }
@@ -415,7 +415,7 @@ impl App {
                 }
                 lines.push(format!(
                     "{flags} suspected  /  {waiting} collecting history  /  {} untracked",
-                    m.rows.len() - m.trends.0.len()
+                    m.rows.iter().filter(|r| m.history(r).is_none()).count()
                 ));
                 lines.push(
                     "Requires 7 observations, 60 seconds and growth across three windows.".into(),
@@ -449,6 +449,7 @@ impl App {
                 "Task Manager > Details > PID. Right-click a column header to select PID.".into(),
                 "User-mode snapshots can miss activity. A RAM gap cannot identify a hidden app.".into(),
                 "\r\nPERSISTENT DISCREPANCIES  /  session observations".into()];
+                lines.insert(1, crate::review::attribution(m));
                 if m.records.is_empty() {
                     lines.push("None confirmed on consecutive complete scans.".into())
                 } else {
@@ -471,7 +472,11 @@ impl App {
         };
         let report = self.item(REPORT);
         if get(report) != content {
-            set(report, &content)
+            unsafe {
+                let first = SendMessageW(report, EM_GETFIRSTVISIBLELINE, 0, 0);
+                set(report, &content);
+                SendMessageW(report, EM_LINESCROLL, 0, first);
+            }
         }
     }
     fn table(&mut self, chosen: Option<Identity>) {
